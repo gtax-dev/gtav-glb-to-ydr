@@ -15,11 +15,11 @@ gtav-glb-to-ydr -i model.glb -render -o p.png      # isometric PNG preview (acti
 
 ## Example
 
-Preview of the example model (`office_chair.glb`, in [`example/`](example)) converted with this tool:
+The [`example/`](example) folder has a sample model (`office_chair.glb`) and a screen recording of the
+full workflow, from the terminal conversion through to the converted drawable in the gtax.dev preview.
+Click the image to play:
 
-<video src="https://github.com/gtax-dev/gtav-glb-to-ydr/raw/main/example/example.mp4" controls muted width="100%"></video>
-
-If the video does not play inline, [view example.mp4](example/example.mp4).
+[![Watch the demo](example/demo-poster.jpg)](example/example.mp4)
 
 ```bash
 gtav-glb-to-ydr -i example/office_chair.glb -object-name office_chair
