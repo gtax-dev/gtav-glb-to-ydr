@@ -13,6 +13,18 @@ gtav-glb-to-ydr -i model.glb -inspect              # mesh/material/animation met
 gtav-glb-to-ydr -i model.glb -render -o p.png      # isometric PNG preview (active plan)
 ```
 
+## Example
+
+Preview of the example model (`office_chair.glb`, in [`example/`](example)) converted with this tool:
+
+<video src="https://github.com/gtax-dev/gtav-glb-to-ydr/raw/main/example/example.mp4" controls muted width="100%"></video>
+
+If the video does not play inline, [view example.mp4](example/example.mp4).
+
+```bash
+gtav-glb-to-ydr -i example/office_chair.glb -object-name office_chair
+```
+
 ## Install
 
 Download a prebuilt binary from the [Releases](https://github.com/gtax-dev/gtav-glb-to-ydr/releases)
