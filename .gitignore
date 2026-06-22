@@ -1,0 +1,16 @@
+# go build -o gtav-glb-to-ydr
+/gtav-glb-to-ydr
+
+# goreleaser release --snapshot
+/dist/
+
+.DS_Store
+
+# downloaded conversion artifacts
+*.zip
+*.ydr
+*.ytd
+*.ytyp
+*.ycd
+dlc.rpf
+/example/*.png
