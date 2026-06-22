@@ -5,6 +5,10 @@ GTA V / FiveM **drawable** package (a `.ydr` plus its `.ytyp` archetype and a `.
 dictionary, and a `.ycd` clip when the GLB has animation), using the gtax.dev API. It can also
 inspect a GLB or render a quick PNG preview without spending any convert quota.
 
+> **Prefer a point-and-click tool?** Use the browser version at
+> [gtax.dev/tools/glb-to-ydr](https://gtax.dev/tools/glb-to-ydr): no install, runs in your browser, and
+> is friendlier for one-off conversions. This CLI is aimed at scripting, automation, and batch jobs.
+
 
 ```
 gtav-glb-to-ydr -i model.glb                       # convert -> model.zip
