@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,10 @@ import (
 	"strings"
 	"testing"
 )
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
 
 func tempGLB(t *testing.T, data string) string {
 	t.Helper()
@@ -77,12 +82,27 @@ func TestOutputNameForConvert(t *testing.T) {
 		{"", "", "thing", "zip", "thing.zip"},                // then object-name + .zip
 		{"", "", "", "zip", "model.zip"},                     // default stem
 		{"", "", "thing", "dlc-rpf", "dlc.rpf"},              // dlc-rpf naming
+		{"", "../../server.zip", "thing", "zip", "server.zip"},
+		{"", `..\\..\\server.zip`, "thing", "zip", "server.zip"},
+		{"", "\x00", "thing", "zip", "thing.zip"},
+		{"", "\x00.zip", "thing", "zip", "thing.zip"},
 	}
 	for _, c := range cases {
 		if got := outputNameForConvert(c.flagOut, c.resultName, c.objectName, c.format); got != c.want {
 			t.Errorf("outputNameForConvert(%q,%q,%q,%q) = %q, want %q",
 				c.flagOut, c.resultName, c.objectName, c.format, got, c.want)
 		}
+	}
+}
+
+func TestStreamToFileRemovesPartialOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "partial.zip")
+	_, err := streamToFile(path, io.MultiReader(strings.NewReader("partial"), failingReader{}))
+	if err == nil {
+		t.Fatal("expected write error")
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("partial output still exists: %v", statErr)
 	}
 }
 
@@ -234,6 +254,78 @@ func TestRunConvert(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "1234 triangles") {
 		t.Errorf("stderr should report geometry, got %q", stderr.String())
+	}
+}
+
+func TestRunConvertDownloadsCDNResult(t *testing.T) {
+	clearKeyEnv(t)
+	glb := tempGLB(t, "glTFbody!")
+	out := filepath.Join(t.TempDir(), "result.zip")
+	key := strings.Repeat("a", 32) + ".zip"
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/convert":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Total-Triangles", "1234")
+			w.Header().Set("X-Total-Vertices", "567")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"key": key, "url": server.URL + "/assets/" + key, "name": "thing.zip",
+				"contentType": "application/zip", "size": 7,
+			})
+		case "/assets/" + key:
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write([]byte("PK\x03\x04zip"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"-i", glb, "-api-url", server.URL, "-api-key", "test-key", "-o", out,
+		"-format", "fivem-zip", "-object-name", "thing",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d (stderr=%q)", code, stderr.String())
+	}
+	data, err := os.ReadFile(out)
+	if err != nil || !bytes.HasPrefix(data, []byte("PK")) {
+		t.Fatalf("CDN output not written correctly: %v / %q", err, data)
+	}
+	if !strings.Contains(stdout.String(), "wrote "+out) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunConvertRemovesMismatchedCDNDownload(t *testing.T) {
+	clearKeyEnv(t)
+	glb := tempGLB(t, "glTFbody!")
+	out := filepath.Join(t.TempDir(), "result.zip")
+	key := strings.Repeat("a", 32) + ".zip"
+
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/convert" {
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"key": key, "url": server.URL + "/assets/" + key, "name": "thing.zip", "size": 8,
+			})
+			return
+		}
+		_, _ = w.Write([]byte("archive"))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-i", glb, "-api-url", server.URL, "-api-key", "test-key", "-o", out}, &stdout, &stderr); code == 0 {
+		t.Fatal("expected size mismatch failure")
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mismatched CDN output still exists: %v", err)
 	}
 }
 

@@ -7,8 +7,11 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +72,19 @@ type inspectAnim struct {
 type apiError struct {
 	Error string `json:"error"`
 }
+
+type convertResponse struct {
+	Key            string `json:"key"`
+	URL            string `json:"url"`
+	Name           string `json:"name"`
+	ContentType    string `json:"contentType"`
+	Size           int64  `json:"size"`
+	ETag           string `json:"etag"`
+	TotalTriangles int    `json:"totalTriangles"`
+	TotalVertices  int    `json:"totalVertices"`
+}
+
+var cdnArtifactKeyPattern = regexp.MustCompile(`^[a-f0-9]{32}\.[a-z0-9]+$`)
 
 func resolveKey(flagVal string) string {
 	if k := strings.TrimSpace(flagVal); k != "" {
@@ -173,16 +189,60 @@ func runConvert(client *http.Client, base string, req convertRequest, key string
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		fmt.Fprintf(stderr, "error: %s: %s\n", resp.Status, readErrorBody(resp))
 		printRateLimit(stderr, resp.Header)
 		return 1
 	}
 
-	out := outputNameForConvert(req.output, resp.Header.Get("X-Result-Name"), req.objectName, format)
-	n, err := streamToFile(out, resp.Body)
+	resultName := resp.Header.Get("X-Result-Name")
+	body := io.Reader(resp.Body)
+	expectedSize := int64(-1)
+	var cdnResp *http.Response
+	if resp.StatusCode == http.StatusCreated {
+		var result convertResponse
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+			fmt.Fprintf(stderr, "error: invalid conversion response: %v\n", err)
+			return 1
+		}
+		parsed, err := url.Parse(result.URL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+			parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			!cdnArtifactKeyPattern.MatchString(result.Key) || parsed.Path != "/assets/"+result.Key || result.Size < 0 {
+			fmt.Fprintln(stderr, "error: conversion response contains invalid CDN metadata")
+			return 1
+		}
+		expectedSize = result.Size
+		if result.Name != "" {
+			resultName = result.Name
+		}
+		downloadRequest, err := http.NewRequest(http.MethodGet, result.URL, nil)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: create CDN request: %v\n", err)
+			return 1
+		}
+		cdnResp, err = client.Do(downloadRequest)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: CDN download failed: %v\n", err)
+			return 1
+		}
+		defer cdnResp.Body.Close()
+		if cdnResp.StatusCode < 200 || cdnResp.StatusCode >= 300 {
+			fmt.Fprintf(stderr, "error: CDN download failed: %s\n", cdnResp.Status)
+			return 1
+		}
+		body = cdnResp.Body
+	}
+
+	out := outputNameForConvert(req.output, resultName, req.objectName, format)
+	n, err := streamToFile(out, body)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if expectedSize >= 0 && n != expectedSize {
+		_ = os.Remove(out)
+		fmt.Fprintf(stderr, "error: CDN download size mismatch: got %d bytes, expected %d\n", n, expectedSize)
 		return 1
 	}
 
@@ -272,10 +332,10 @@ func outputNameForConvert(flagOut, resultName, objectName, format string) string
 	if v := strings.TrimSpace(flagOut); v != "" {
 		return v
 	}
-	if v := strings.TrimSpace(resultName); v != "" {
+	if v := safeResultName(resultName); v != "" {
 		return v
 	}
-	name := strings.TrimSpace(objectName)
+	name := safeResultName(objectName)
 	if name == "" {
 		name = "model"
 	}
@@ -283,6 +343,23 @@ func outputNameForConvert(flagOut, resultName, objectName, format string) string
 		return "dlc.rpf"
 	}
 	return name + ".zip"
+}
+
+func safeResultName(value string) string {
+	value = strings.ReplaceAll(value, "\\", "/")
+	value = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value)
+	value = strings.TrimSpace(path.Base(strings.TrimSpace(value)))
+	extension := path.Ext(value)
+	stem := strings.TrimSpace(strings.TrimSuffix(value, extension))
+	if value == "" || value == "." || value == ".." || value == "/" || stem == "" {
+		return ""
+	}
+	return value
 }
 
 func streamToFile(path string, r io.Reader) (int64, error) {
@@ -297,6 +374,7 @@ func streamToFile(path string, r io.Reader) (int64, error) {
 		return n, fmt.Errorf("write output %s: %w", path, copyErr)
 	}
 	if closeErr != nil {
+		_ = os.Remove(path)
 		return n, fmt.Errorf("close output %s: %w", path, closeErr)
 	}
 	return n, nil

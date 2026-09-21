@@ -135,6 +135,10 @@ Uploads are capped at 100 MB (the hosted API sits behind Cloudflare). On an erro
 server's `{"error":"..."}` message and the rate-limit headers, and exits non-zero. The written output
 path is printed to stdout; progress and diagnostics go to stderr.
 
+The hosted converter may return the artifact directly or return a CDN URL.
+The CLI handles both contracts transparently and still writes one local output
+file. When `-o` is omitted, the CDN metadata filename takes precedence.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
